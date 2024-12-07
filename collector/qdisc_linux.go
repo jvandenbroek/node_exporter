@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/ema/qdisc"
@@ -42,6 +43,7 @@ type qdiscStatCollector struct {
 
 var (
 	collectorQdisc                 = kingpin.Flag("collector.qdisc.fixtures", "test fixtures to use for qdisc collector end-to-end testing").Default("").String()
+	collectorQdiscChildren         = kingpin.Flag("collector.qdisc.include-children", "include all qdisc with parent set").Default("false").Bool()
 	collectorQdiscDeviceInclude    = kingpin.Flag("collector.qdisc.device-include", "Regexp of qdisc devices to include (mutually exclusive to device-exclude).").String()
 	oldCollectorQdiskDeviceInclude = kingpin.Flag("collector.qdisk.device-include", "DEPRECATED: Use collector.qdisc.device-include").Hidden().String()
 	collectorQdiscDeviceExclude    = kingpin.Flag("collector.qdisc.device-exclude", "Regexp of qdisc devices to exclude (mutually exclusive to device-include).").String()
@@ -80,37 +82,37 @@ func NewQdiscStatCollector(logger *slog.Logger) (Collector, error) {
 		bytes: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "bytes_total"),
 			"Number of bytes sent.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.CounterValue},
 		packets: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "packets_total"),
 			"Number of packets sent.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.CounterValue},
 		drops: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "drops_total"),
 			"Number of packets dropped.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.CounterValue},
 		requeues: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "requeues_total"),
 			"Number of packets dequeued, not transmitted, and requeued.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.CounterValue},
 		overlimits: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "overlimits_total"),
 			"Number of overlimit packets.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.CounterValue},
 		qlength: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "current_queue_length"),
 			"Number of packets currently in queue to be sent.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.GaugeValue},
 		backlog: typedDesc{prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "qdisc", "backlog"),
 			"Number of bytes currently in queue to be sent.",
-			[]string{"device", "kind"}, nil,
+			[]string{"device", "kind", "parent"}, nil,
 		), prometheus.GaugeValue},
 		logger:       logger,
 		deviceFilter: newDeviceFilter(*collectorQdiscDeviceExclude, *collectorQdiscDeviceInclude),
@@ -132,6 +134,7 @@ func testQdiscGet(fixtures string) ([]qdisc.QdiscInfo, error) {
 func (c *qdiscStatCollector) Update(ch chan<- prometheus.Metric) error {
 	var msgs []qdisc.QdiscInfo
 	var err error
+	var parent = "0"
 
 	fixtures := *collectorQdisc
 
@@ -146,22 +149,22 @@ func (c *qdiscStatCollector) Update(ch chan<- prometheus.Metric) error {
 	}
 
 	for _, msg := range msgs {
-		// Only report root qdisc information.
-		if msg.Parent != 0 {
-			continue
-		}
-
 		if c.deviceFilter.ignored(msg.IfaceName) {
 			continue
 		}
+		if *collectorQdiscChildren {
+			parent = strconv.FormatUint(uint64(msg.Parent), 16)
+		} else if msg.Parent != 0 {
+			continue
+		}
 
-		ch <- c.bytes.mustNewConstMetric(float64(msg.Bytes), msg.IfaceName, msg.Kind)
-		ch <- c.packets.mustNewConstMetric(float64(msg.Packets), msg.IfaceName, msg.Kind)
-		ch <- c.drops.mustNewConstMetric(float64(msg.Drops), msg.IfaceName, msg.Kind)
-		ch <- c.requeues.mustNewConstMetric(float64(msg.Requeues), msg.IfaceName, msg.Kind)
-		ch <- c.overlimits.mustNewConstMetric(float64(msg.Overlimits), msg.IfaceName, msg.Kind)
-		ch <- c.qlength.mustNewConstMetric(float64(msg.Qlen), msg.IfaceName, msg.Kind)
-		ch <- c.backlog.mustNewConstMetric(float64(msg.Backlog), msg.IfaceName, msg.Kind)
+		ch <- c.bytes.mustNewConstMetric(float64(msg.Bytes), msg.IfaceName, msg.Kind, parent)
+		ch <- c.packets.mustNewConstMetric(float64(msg.Packets), msg.IfaceName, msg.Kind, parent)
+		ch <- c.drops.mustNewConstMetric(float64(msg.Drops), msg.IfaceName, msg.Kind, parent)
+		ch <- c.requeues.mustNewConstMetric(float64(msg.Requeues), msg.IfaceName, msg.Kind, parent)
+		ch <- c.overlimits.mustNewConstMetric(float64(msg.Overlimits), msg.IfaceName, msg.Kind, parent)
+		ch <- c.qlength.mustNewConstMetric(float64(msg.Qlen), msg.IfaceName, msg.Kind, parent)
+		ch <- c.backlog.mustNewConstMetric(float64(msg.Backlog), msg.IfaceName, msg.Kind, parent)
 	}
 
 	return nil
